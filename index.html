@@ -1,0 +1,780 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<title>Chess Marathon</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; overscroll-behavior: none; }
+  body { display: flex; align-items: center; justify-content: center;
+         padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); box-sizing: border-box; }
+  canvas { display: block; height: 100%; max-height: 100%; max-width: 100%; aspect-ratio: 390 / 844;
+           object-fit: contain; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  @media (min-aspect-ratio: 390/844) { canvas { width: auto; } }
+  @media (max-aspect-ratio: 390/844) { canvas { width: 100%; height: auto; } }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+// ===== CHESS MARATHON — v2.2: settings (sound, vibration, pop-ups) =====
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 390, H = 844;
+canvas.width = W; canvas.height = H;
+
+// ---- Board ----
+const COLS = 7, RANKS = 1000;
+const VIEW = 10, BEHIND = 2;
+const CS = W / COLS;
+const BOARD_Y = 128, BOARD_H = VIEW * CS;
+const FOOT_Y = BOARD_Y + BOARD_H;
+const PROMO_EVERY = 25;                 // a pawn that reaches a gold rank becomes a queen
+
+// ---- Pieces ----
+const PIECES = {
+  pawn:   { glyph: '♟', value: 1 },
+  knight: { glyph: '♞', value: 3 },
+  bishop: { glyph: '♝', value: 3 },
+  rook:   { glyph: '♜', value: 5 },
+  queen:  { glyph: '♛', value: 9 },
+};
+const KNIGHT_JUMPS = [[1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2]];
+const DIAG = [[1,1],[1,-1],[-1,1],[-1,-1]];
+const ORTHO = [[1,0],[-1,0],[0,1],[0,-1]];
+const dirsFor = (t) => t === 'rook' ? ORTHO : t === 'bishop' ? DIAG : DIAG.concat(ORTHO);
+
+// ---- Themes ----
+const THEMES = {
+  wood: {
+    name: 'Classic wood', font: 'Georgia, "Times New Roman", serif',
+    bg: '#1d140c', hud: '#f6ead2', sub: '#b8a07c', accent: '#f2c14e', button: '#f2c14e', buttonText: '#1d140c',
+    light: '#e9cfa3', dark: '#a8743f', tile: false, glow: 0, grid: null,
+    wFill: '#fdf8ee', wStroke: '#3a2410', kFill: '#2a1a0e', kStroke: '#f3e3c4',
+    move: 'rgba(52,120,60,.6)', danger: 'rgba(190,30,20,.85)', last: 'rgba(246,226,122,.5)', promo: 'rgba(242,193,78,.45)',
+  },
+  cartoon: {
+    name: 'Cartoon', font: '"Trebuchet MS", "Arial Rounded MT Bold", sans-serif',
+    bg: '#3b8fe0', hud: '#ffffff', sub: '#d6ebff', accent: '#ffe066', button: '#ffe066', buttonText: '#1f3a8a',
+    light: '#bfe9ff', dark: '#7fc8f2', tile: true, glow: 0, grid: null,
+    wFill: '#ffffff', wStroke: '#1f3a8a', kFill: '#ff5d73', kStroke: '#7a1020',
+    move: 'rgba(31,58,138,.45)', danger: 'rgba(230,40,70,.9)', last: 'rgba(255,224,102,.75)', promo: 'rgba(255,224,102,.6)',
+  },
+  neon: {
+    name: 'Neon arcade', font: '"Courier New", ui-monospace, monospace',
+    bg: '#07071a', hud: '#e8f6ff', sub: '#8a8ac0', accent: '#39f5ff', button: '#39f5ff', buttonText: '#07071a',
+    light: '#141428', dark: '#1d1d3a', tile: false, glow: 14, grid: 'rgba(57,245,255,.16)',
+    wFill: '#39f5ff', wStroke: '#07071a', kFill: '#ff3df2', kStroke: '#07071a',
+    move: 'rgba(57,245,255,.55)', danger: 'rgba(255,61,90,.95)', last: 'rgba(255,61,242,.25)', promo: 'rgba(255,230,0,.22)',
+  },
+  minimal: {
+    name: 'Minimal flat', font: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+    bg: '#fafaf7', hud: '#1f1f1f', sub: '#8a8a84', accent: '#2f7d4f', button: '#1f1f1f', buttonText: '#fafaf7',
+    light: '#f2f2ef', dark: '#d9d9d3', tile: false, glow: 0, grid: null,
+    wFill: '#ffffff', wStroke: '#2b2b2b', kFill: '#2b2b2b', kStroke: '#2b2b2b',
+    move: 'rgba(47,125,79,.45)', danger: 'rgba(200,50,40,.85)', last: 'rgba(207,230,212,.9)', promo: 'rgba(240,200,80,.4)',
+  },
+};
+const THEME_IDS = Object.keys(THEMES);
+function load(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } }
+function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+let themeId = THEMES[load('cm_theme', 'wood')] ? load('cm_theme', 'wood') : 'wood';
+let T = THEMES[themeId];
+function setTheme(id) { themeId = id; T = THEMES[id]; save('cm_theme', id); }
+let BEST = load('cm_best2', 0);
+
+// ---- Settings: sound, vibration (screen shake + phone buzz), pop-up messages ----
+const SET = Object.assign({ sound: true, shake: true, popups: true }, load('cm_settings', {}));
+const SETTINGS = [
+  { id: 'sound',  label: 'Sound' },
+  { id: 'shake',  label: 'Vibration and shake' },
+  { id: 'popups', label: 'Pop-up messages' },
+];
+function toggleSetting(id) { SET[id] = !SET[id]; save('cm_settings', SET); }
+function buzz(ms) { if (SET.shake) try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} }
+
+// ---- Sound ----
+let AC = null;
+function beep(freq, dur, type, vol) {
+  if (!SET.sound) return;
+  try {
+    AC = AC || new (window.AudioContext || window.webkitAudioContext)();
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = type || 'triangle'; o.frequency.value = freq;
+    g.gain.setValueAtTime(vol || 0.05, AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + dur);
+    o.connect(g); g.connect(AC.destination);
+    o.start(); o.stop(AC.currentTime + dur);
+  } catch (e) {}
+}
+const SFX = {
+  move:    () => beep(520, 0.05),
+  black:   () => beep(300, 0.06),
+  capture: () => { beep(700, 0.07, 'square', 0.04); setTimeout(() => beep(950, 0.09, 'square', 0.04), 50); },
+  promote: () => [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => beep(f, 0.12), i * 60)),
+  hit:     () => beep(130, 0.3, 'sawtooth', 0.07),
+  tick:    () => beep(880, 0.03, 'triangle', 0.03),
+  rumble:  () => beep(70, 0.25, 'sawtooth', 0.05),
+  combo:   (n) => [0, 1, 2].forEach(i => setTimeout(() => beep(600 + n * 120 + i * 160, 0.09, 'square', 0.045), i * 45)),
+};
+
+// ---- State ----
+let S;
+function newGame() {
+  S = {
+    player: { type: 'pawn', r: 0, c: 3, dr: 0, dc: 3 },
+    enemies: new Map(),
+    score: 0, best: 0, revealed: 0, lives: 3,
+    collapse: -2.5,                  // every rank at or below this falls into the void
+    combo: 0, slow: 0, flashA: 0, rings: [], banner: null, debris: [],
+    state: 'play', msg: '', blocked: false,
+    blackAt: 0, lastMove: null, cam: 0, time: 0,
+    shake: 0, parts: [], floats: [],
+    rects: {}, settings: false,
+  };
+  for (let rk = 2; rk < VIEW; rk++) spawnRank(rk);
+  S.revealed = topRank();
+}
+
+// ---- Helpers ----
+const key = (r, c) => r + ',' + c;
+const enemyAt = (r, c) => S.enemies.get(key(r, c));
+const onBoard = (r, c) => r >= 0 && r < RANKS && c >= 0 && c < COLS;
+const camTarget = () => Math.max(0, Math.min(RANKS - VIEW, S.player.r - BEHIND));
+const topRank = () => Math.min(RANKS - 1, camTarget() + VIEW - 1);
+const voidEdge = () => Math.floor(S.collapse);
+const inView = (r) => r >= camTarget() && r <= topRank() && r > voidEdge();
+const isPromoRank = (r) => (r + 1) % PROMO_EVERY === 0;
+const mk = (type, r, c) => ({ type, r, c, dr: r + 0.5, dc: c });
+
+// ---- White moves: plain chess ----
+function playerMoves() {
+  const p = S.player, out = [];
+  const ok = (r, c) => onBoard(r, c) && inView(r);
+  if (p.type === 'pawn') {
+    if (ok(p.r + 1, p.c) && !enemyAt(p.r + 1, p.c)) {
+      out.push({ r: p.r + 1, c: p.c });
+      if (p.r === 0 && ok(p.r + 2, p.c) && !enemyAt(p.r + 2, p.c)) out.push({ r: p.r + 2, c: p.c });
+    }
+    for (const dc of [-1, 1]) if (enemyAt(p.r + 1, p.c + dc)) out.push({ r: p.r + 1, c: p.c + dc });
+    // the marathon pawn may also step sideways
+    for (const dc of [-1, 1]) if (ok(p.r, p.c + dc) && !enemyAt(p.r, p.c + dc)) out.push({ r: p.r, c: p.c + dc });
+    return out;
+  }
+  if (p.type === 'knight') {
+    for (const [a, b] of KNIGHT_JUMPS) if (ok(p.r + a, p.c + b)) out.push({ r: p.r + a, c: p.c + b });
+    return out;
+  }
+  for (const [a, b] of dirsFor(p.type)) {
+    let r = p.r + a, c = p.c + b;
+    while (ok(r, c)) { out.push({ r, c }); if (enemyAt(r, c)) break; r += a; c += b; }
+  }
+  return out;
+}
+// squares the player could capture on (black avoids them)
+function playerThreats() {
+  const p = S.player, set = new Set();
+  if (p.type === 'pawn') { set.add(key(p.r + 1, p.c - 1)); set.add(key(p.r + 1, p.c + 1)); return set; }
+  if (p.type === 'knight') { for (const [a, b] of KNIGHT_JUMPS) set.add(key(p.r + a, p.c + b)); return set; }
+  for (const [a, b] of dirsFor(p.type)) {
+    let r = p.r + a, c = p.c + b;
+    while (onBoard(r, c)) { set.add(key(r, c)); if (enemyAt(r, c)) break; r += a; c += b; }
+  }
+  return set;
+}
+
+// ---- Black: plays down the board ----
+function attacks(e, r, c) {
+  const dr = r - e.r, dc = c - e.c;
+  if (!dr && !dc) return false;
+  if (e.type === 'pawn') return dr === -1 && Math.abs(dc) === 1;
+  if (e.type === 'knight') return Math.abs(dr * dc) === 2;
+  const diag = Math.abs(dr) === Math.abs(dc), line = !dr || !dc;
+  if ((e.type === 'bishop' && !diag) || (e.type === 'rook' && !line) || (e.type === 'queen' && !diag && !line)) return false;
+  const sr = Math.sign(dr), sc = Math.sign(dc);
+  for (let x = e.r + sr, y = e.c + sc; x !== r || y !== c; x += sr, y += sc) if (enemyAt(x, y)) return false;
+  return true;
+}
+function isDanger(r, c) {
+  for (const e of S.enemies.values()) if (!(e.r === r && e.c === c) && attacks(e, r, c)) return true;
+  return false;
+}
+function blackMoves(e) {
+  const p = S.player, out = [];
+  const free = (r, c) => onBoard(r, c) && inView(r) && !enemyAt(r, c);
+  const isP = (r, c) => r === p.r && c === p.c;
+  if (e.type === 'pawn') {
+    if (free(e.r - 1, e.c) && !isP(e.r - 1, e.c)) out.push({ r: e.r - 1, c: e.c });
+    for (const dc of [-1, 1]) if (isP(e.r - 1, e.c + dc)) out.push({ r: e.r - 1, c: e.c + dc });
+    return out;
+  }
+  if (e.type === 'knight') {
+    for (const [a, b] of KNIGHT_JUMPS) if (free(e.r + a, e.c + b)) out.push({ r: e.r + a, c: e.c + b });
+    return out;
+  }
+  for (const [a, b] of dirsFor(e.type)) {
+    let r = e.r + a, c = e.c + b;
+    while (free(r, c)) { out.push({ r, c }); if (isP(r, c)) break; r += a; c += b; }
+  }
+  return out;
+}
+function blackTurn() {
+  const p = S.player;
+  const threats = playerThreats();
+  const dist = (r, c) => Math.max(Math.abs(r - p.r), Math.abs(c - p.c));
+  let best = null, bestScore = -Infinity;
+  for (const e of S.enemies.values()) {
+    for (const m of blackMoves(e)) {
+      let sc = Math.random() * 6;
+      if (m.r === p.r && m.c === p.c) sc += 1000;
+      else {
+        const fr = e.r, fc = e.c;
+        e.r = m.r; e.c = m.c;
+        if (attacks(e, p.r, p.c)) sc += 20;
+        e.r = fr; e.c = fc;
+        if (threats.has(key(m.r, m.c))) sc -= 40 + PIECES[e.type].value * 5;
+        if (threats.has(key(fr, fc))) sc += 18;
+        sc += (dist(fr, fc) - dist(m.r, m.c)) * 4;
+      }
+      if (sc > bestScore) { bestScore = sc; best = { e, m }; }
+    }
+  }
+  if (best) {
+    const { e, m } = best;
+    S.lastMove = { fr: e.r, fc: e.c, tr: m.r, tc: m.c };
+    if (m.r === p.r && m.c === p.c) {
+      S.enemies.delete(key(e.r, e.c));
+      e.r = m.r; e.c = m.c;
+      getCaptured(e);
+      return;
+    }
+    S.enemies.delete(key(e.r, e.c));
+    e.r = m.r; e.c = m.c;
+    S.enemies.set(key(e.r, e.c), e);
+    SFX.black();
+  }
+  advanceCollapse();
+  S.blocked = S.state === 'play' && !playerMoves().length;
+}
+
+// ---- The void: the board breaks away behind you every turn ----
+function advanceCollapse() {
+  if (S.state !== 'play') return;
+  const p = S.player;
+  const before = voidEdge();
+  const gap = p.r - S.collapse;
+  let speed = 0.55 + Math.min(0.35, p.r / 1500);   // faster the further you get
+  if (gap > 7) speed += 0.6;                         // it catches up if you sprint ahead
+  S.collapse += speed;
+  const edge = voidEdge();
+  for (let r = before + 1; r <= edge; r++) {
+    for (let c = 0; c < COLS; c++) S.debris.push({ r, c, y: 0, vy: 40 + Math.random() * 60, rot: 0, vr: (Math.random() - 0.5) * 4, life: 1.2, color: (r + c) % 2 ? T.light : T.dark });
+    for (let c = 0; c < COLS; c++) {
+      const e = enemyAt(r, c);
+      if (e) { S.enemies.delete(key(r, c)); S.score += 5; floatText(r, c, 'FELL +5', T.sub); }
+    }
+  }
+  if (p.r <= edge) {                                 // caught by the void
+    S.shake = 1; SFX.hit(); buzz(120);
+    S.lives -= 1;
+    S.combo = 0;
+    if (S.lives <= 0) {
+      S.state = 'over'; S.msg = 'Swallowed by the void';
+      if (S.best + 1 > BEST) { BEST = S.best + 1; save('cm_best2', BEST); S.newBest = true; }
+      return;
+    }
+    S.collapse = p.r - 4;                            // knocked back to safety
+    S.banner = !SET.popups ? null : { text: 'THE VOID BIT YOU', life: 1.2, danger: true };
+  } else if (p.r - S.collapse < 2.5) SFX.rumble();
+}
+
+// captured as a piece: you fall back to a pawn. captured as a pawn: lose a life
+function getCaptured(e) {
+  const p = S.player;
+  S.shake = 1; SFX.hit(); buzz(120); S.combo = 0;
+  burst(p.r, p.c, T.kFill, 18);
+  if (p.type !== 'pawn') {
+    floatText(p.r, p.c, 'BACK TO PAWN', T.danger);
+    p.type = 'pawn';
+    S.blocked = !playerMoves().length;
+    return;
+  }
+  S.lives -= 1;
+  if (S.lives > 0) {
+    floatText(p.r, p.c, '-1 LIFE', T.danger);
+    S.blocked = !playerMoves().length;
+    return;
+  }
+  S.state = 'over';
+  S.msg = 'Taken by a ' + e.type;
+  if (S.best + 1 > BEST) { BEST = S.best + 1; save('cm_best2', BEST); S.newBest = true; }
+}
+
+// ---- Spawning: each new rank on screen may bring a black piece ----
+function pickType(n) {
+  const pool = [['pawn', 10]];
+  if (n > 15) pool.push(['knight', 4]);
+  if (n > 20) pool.push(['bishop', 3]);
+  if (n > 40) pool.push(['rook', 2 + n / 300]);
+  if (n > 80) pool.push(['queen', 1 + n / 400]);
+  let t = Math.random() * pool.reduce((s, x) => s + x[1], 0);
+  for (const [name, w] of pool) if ((t -= w) < 0) return name;
+  return 'pawn';
+}
+function addEnemy(rk, type) {
+  const free = [];
+  for (let c = 0; c < COLS; c++) if (!enemyAt(rk, c) && !(S.player.r === rk && S.player.c === c)) free.push(c);
+  if (!free.length) return;
+  const c = free[Math.floor(Math.random() * free.length)];
+  S.enemies.set(key(rk, c), mk(type, rk, c));
+}
+function spawnRank(rk) {
+  if (rk >= RANKS - 1) return;
+  const n = rk + 1;
+  const chance = n <= 15 ? 0.3 : n <= 40 ? 0.4 : Math.min(0.9, 0.5 + n / 1500);
+  if (Math.random() < chance) addEnemy(rk, n <= 15 ? 'pawn' : pickType(n));
+  if (n > 300 && Math.random() < n / 2500) addEnemy(rk, pickType(n));
+}
+
+// ---- Player turn ----
+function tryMove(r, c) {
+  const p = S.player;
+  if (!playerMoves().some(m => m.r === r && m.c === c)) return false;
+  const victim = enemyAt(r, c);
+  if (victim) {
+    S.enemies.delete(key(r, c));
+    const v = PIECES[victim.type].value;
+    S.combo += 1;
+    const pts = v * 10 * S.combo;
+    S.score += pts;
+    burst(r, c, T.accent, 18 + S.combo * 8);
+    S.rings.push({ r, c, t: 0, color: T.accent });
+    floatText(r, c, '+' + pts, T.accent);
+    S.slow = 0.25 + Math.min(S.combo, 5) * 0.05;     // slow-motion hit
+    S.flashA = Math.min(0.55, 0.2 + S.combo * 0.08);
+    S.shake = Math.max(S.shake, 0.25 + S.combo * 0.1);
+    if (S.combo >= 2) { S.banner = !SET.popups ? null : { text: 'COMBO x' + S.combo, life: 1.1 }; SFX.combo(S.combo); } else SFX.capture();
+    if (victim.type !== 'pawn' && victim.type !== p.type) {   // you become what you capture
+      p.type = victim.type;
+      floatText(r, c, 'NOW A ' + victim.type.toUpperCase(), T.hud);
+    }
+  } else { S.combo = 0; SFX.move(); }
+  p.r = r; p.c = c;
+
+  if (p.type === 'pawn' && isPromoRank(r)) {
+    p.type = 'queen'; S.score += 50;
+    floatText(r, c, 'PROMOTED!', T.accent); burst(r, c, T.accent, 26); SFX.promote();
+  }
+  if (p.r > S.best) { S.score += p.r - S.best; S.best = p.r; }
+  for (let rk = S.revealed + 1; rk <= topRank(); rk++) spawnRank(rk);
+  S.revealed = Math.max(S.revealed, topRank());
+  for (const [k, e] of S.enemies) if (e.r < camTarget()) S.enemies.delete(k);
+
+  if (p.r === RANKS - 1) {
+    S.state = 'won';
+    if (RANKS > BEST) { BEST = RANKS; save('cm_best2', BEST); }
+    return true;
+  }
+  S.blackAt = S.time + 0.18;            // black answers a moment later
+  return true;
+}
+function waitTurn() {
+  S.blocked = false;
+  addEnemy(topRank(), pickType(S.player.r + 1));
+  floatText(S.player.r, S.player.c, 'WAIT', T.sub);
+  S.blackAt = S.time + 0.12;
+}
+
+// ---- Effects ----
+function cellCenter(r, c) { return { x: c * CS + CS / 2, y: rankToY(r) + CS / 2 }; }
+function burst(r, c, color, n) {
+  const { x, y } = cellCenter(r, c);
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = 80 + Math.random() * 200;
+    S.parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 60, life: 0.6 + Math.random() * 0.3, color });
+  }
+}
+function floatText(r, c, text, color) {
+  if (!SET.popups) return;
+  const { x, y } = cellCenter(r, c);
+  S.floats.push({ x: Math.max(80, Math.min(W - 80, x)), y, text, color, life: 1 });
+}
+
+// ---- Input ----
+const inRect = (x, y, b) => b && x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
+canvas.addEventListener('pointerdown', (e) => {
+  const b = canvas.getBoundingClientRect();
+  const x = (e.clientX - b.left) * (W / b.width), y = (e.clientY - b.top) * (H / b.height);
+  const R = S.rects;
+  if (S.settings) {
+    for (const t of R.toggles || []) if (inRect(x, y, t)) { toggleSetting(t.id); SFX.tick(); return; }
+    S.settings = false;                                      // tap anywhere else closes
+    return;
+  }
+  if (inRect(x, y, R.gear)) { S.settings = true; return; }
+  if (inRect(x, y, R.theme)) { setTheme(THEME_IDS[(THEME_IDS.indexOf(themeId) + 1) % THEME_IDS.length]); return; }
+  if (S.state === 'menu') {
+    for (const t of R.swatches || []) if (inRect(x, y, t)) { setTheme(t.id); return; }
+    if (inRect(x, y, R.play)) { newGame(); SFX.promote(); }
+    return;
+  }
+  if (S.state === 'over' || S.state === 'won') { S.state = 'menu'; return; }
+  if (S.blackAt) return;                                    // black is thinking
+  if (S.blocked && inRect(x, y, R.wait)) { waitTurn(); return; }
+  if (y >= BOARD_Y && y < FOOT_Y) {
+    const c = Math.floor(x / CS);
+    const r = camTarget() + VIEW - 1 - Math.floor((y - BOARD_Y) / CS);
+    tryMove(r, c);
+  }
+});
+
+// ---- Drawing ----
+function rankToY(r) { return BOARD_Y + (VIEW - 1 - (r - S.cam)) * CS; }
+
+function drawPiece(type, x, y, size, white) {
+  ctx.save();
+  ctx.font = size + 'px "DejaVu Sans", "Segoe UI Symbol", "Noto Sans Symbols 2", serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const g = PIECES[type].glyph + '︎';
+  if (T.glow) { ctx.shadowColor = white ? T.wFill : T.kFill; ctx.shadowBlur = T.glow; }
+  ctx.lineWidth = T.tile ? 5 : 3;
+  ctx.strokeStyle = white ? T.wStroke : T.kStroke;
+  if (!T.glow) ctx.strokeText(g, x, y + 2);
+  ctx.fillStyle = white ? T.wFill : T.kFill;
+  ctx.fillText(g, x, y + 2);
+  ctx.restore();
+}
+
+function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+
+function drawSquare(r, c, y, color) {
+  if (T.tile) { ctx.fillStyle = color; roundRect(c * CS + 2, y + 2, CS - 4, CS - 4, 10); ctx.fill(); }
+  else { ctx.fillStyle = color; ctx.fillRect(c * CS, y, CS + 0.5, CS + 0.5); }
+}
+
+function drawBoard() {
+  const p = S.player;
+  ctx.save();
+  if (S.shake > 0 && SET.shake) ctx.translate((Math.random() - 0.5) * 12 * S.shake, (Math.random() - 0.5) * 12 * S.shake);
+  ctx.beginPath(); ctx.rect(0, BOARD_Y, W, BOARD_H); ctx.clip();
+  ctx.fillStyle = T.bg; ctx.fillRect(0, BOARD_Y, W, BOARD_H);
+
+  const first = Math.floor(S.cam) - 1;
+  for (let r = first; r <= first + VIEW + 1; r++) {
+    if (r < 0 || r >= RANKS) continue;
+    const y = rankToY(r);
+    const edge = voidEdge();
+    if (r <= edge) continue;                                   // fallen into the void
+    const crumble = r === edge + 1 ? S.collapse - edge : 0;    // 0..1, how close this rank is to falling
+    for (let c = 0; c < COLS; c++) {
+      if (crumble > 0) {
+        ctx.save();
+        ctx.translate((Math.random() - 0.5) * 3 * crumble, (Math.random() - 0.5) * 3 * crumble);
+        drawSquare(r, c, y, (r + c) % 2 ? T.light : T.dark);
+        ctx.fillStyle = 'rgba(200,30,20,' + (0.15 + crumble * 0.4) + ')';
+        ctx.fillRect(c * CS, y, CS, CS);
+        ctx.restore();
+      } else drawSquare(r, c, y, (r + c) % 2 ? T.light : T.dark);
+    }
+    if (isPromoRank(r)) { ctx.fillStyle = T.promo; ctx.fillRect(0, y, W, CS); }
+    if (T.grid) { ctx.strokeStyle = T.grid; ctx.lineWidth = 1; ctx.strokeRect(0.5, y + 0.5, W - 1, CS); }
+    ctx.fillStyle = T.tile ? 'rgba(31,58,138,.45)' : T.glow ? T.sub : 'rgba(0,0,0,.35)';
+    ctx.font = '10px ' + T.font; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(r + 1, 4, y + 4);
+    if (isPromoRank(r)) { ctx.textAlign = 'right'; ctx.fillText('PROMOTE', W - 4, y + 4); }
+  }
+  // the void: dark pit with a glowing broken edge, and tiles falling into it
+  const vy = rankToY(voidEdge()) ;
+  if (vy > BOARD_Y) {
+    const top = Math.min(FOOT_Y, vy + CS);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, top, W, FOOT_Y - top);
+    const g = ctx.createLinearGradient(0, top, 0, top + 40);
+    g.addColorStop(0, 'rgba(255,70,20,.55)'); g.addColorStop(1, 'rgba(255,70,20,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, top, W, 40);
+  }
+  for (const d of S.debris) {
+    const { x, y } = cellCenter(d.r, d.c);
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, d.life);
+    ctx.translate(x, y + d.y); ctx.rotate(d.rot);
+    const sz = CS * (0.4 + d.life * 0.5);
+    ctx.fillStyle = d.color; ctx.fillRect(-sz / 2, -sz / 2, sz, sz);
+    ctx.restore();
+  }
+  if (S.lastMove) {
+    for (const [r, c] of [[S.lastMove.fr, S.lastMove.fc], [S.lastMove.tr, S.lastMove.tc]]) drawSquare(r, c, rankToY(r), T.last);
+  }
+
+  if (S.state === 'play' && !S.blackAt) {
+    for (const m of playerMoves()) {
+      const { x, y } = cellCenter(m.r, m.c);
+      const danger = isDanger(m.r, m.c);
+      ctx.beginPath();
+      if (enemyAt(m.r, m.c)) {
+        ctx.lineWidth = 4; ctx.strokeStyle = danger ? T.danger : T.move;
+        ctx.arc(x, y, CS * 0.44, 0, Math.PI * 2); ctx.stroke();
+      } else {
+        ctx.fillStyle = danger ? T.danger : T.move;
+        ctx.arc(x, y, CS * (danger ? 0.12 : 0.15), 0, Math.PI * 2); ctx.fill();
+        if (danger) { ctx.lineWidth = 2.5; ctx.strokeStyle = T.danger; ctx.beginPath(); ctx.arc(x, y, CS * 0.22, 0, Math.PI * 2); ctx.stroke(); }
+      }
+    }
+  }
+
+  for (const e of S.enemies.values()) drawPiece(e.type, e.dc * CS + CS / 2, rankToY(e.dr) + CS / 2, CS * 0.78, false);
+  drawPiece(p.type, p.dc * CS + CS / 2, rankToY(p.dr) + CS / 2, CS * 0.84, true);
+
+  for (const q of S.parts) { ctx.globalAlpha = Math.max(0, q.life); ctx.fillStyle = q.color; ctx.fillRect(q.x - 3, q.y - 3, 6, 6); }
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const f of S.floats) {
+    ctx.globalAlpha = Math.min(1, f.life * 1.6);
+    ctx.font = 'bold 20px ' + T.font;
+    ctx.lineWidth = 4; ctx.strokeStyle = T.bg;
+    ctx.strokeText(f.text, f.x, f.y); ctx.fillStyle = f.color; ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
+  for (const g of S.rings) {                                   // capture shockwave
+    const { x, y } = cellCenter(g.r, g.c);
+    ctx.globalAlpha = Math.max(0, 1 - g.t / 0.5);
+    ctx.strokeStyle = g.color; ctx.lineWidth = 6 * (1 - g.t / 0.5) + 1;
+    ctx.beginPath(); ctx.arc(x, y, 10 + g.t * 260, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  if (S.flashA > 0) { ctx.fillStyle = 'rgba(255,255,255,' + S.flashA + ')'; ctx.fillRect(0, BOARD_Y, W, BOARD_H); }
+  if (S.banner) {
+    const b = S.banner, k = Math.min(1, (1.2 - b.life) * 8);  // pop in
+    ctx.save();
+    ctx.translate(W / 2, BOARD_Y + BOARD_H * 0.38);
+    ctx.scale(0.6 + 0.4 * k, 0.6 + 0.4 * k);
+    ctx.globalAlpha = Math.min(1, b.life * 2);
+    ctx.font = 'bold 44px ' + T.font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 8; ctx.strokeStyle = T.bg; ctx.strokeText(b.text, 0, 0);
+    ctx.fillStyle = b.danger ? T.danger : T.accent; ctx.fillText(b.text, 0, 0);
+    ctx.restore();
+  }
+}
+
+function drawGear() {
+  const x = W - 86, y = 44, s = 30, cx = x + s / 2, cy = y + s / 2;
+  S.rects.gear = { x: x - 4, y: y - 6, w: s + 8, h: s + 12 };
+  ctx.save();
+  ctx.strokeStyle = T.hud; ctx.fillStyle = T.hud; ctx.lineWidth = 3;
+  for (let i = 0; i < 8; i++) {                              // cog teeth
+    const a = i * Math.PI / 4;
+    ctx.beginPath(); ctx.moveTo(cx + Math.cos(a) * 8, cy + Math.sin(a) * 8); ctx.lineTo(cx + Math.cos(a) * 13, cy + Math.sin(a) * 13); ctx.stroke();
+  }
+  ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(cx, cy, 8.5, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+function drawSettings() {
+  ctx.fillStyle = T.bg; ctx.globalAlpha = 0.94; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = T.hud; ctx.font = 'bold 30px ' + T.font;
+  ctx.fillText('SETTINGS', W / 2, 250);
+  S.rects.toggles = [];
+  SETTINGS.forEach((o, i) => {
+    const y = 300 + i * 84, b = { x: 28, y, w: W - 56, h: 68, id: o.id };
+    S.rects.toggles.push(b);
+    ctx.fillStyle = T.light; ctx.globalAlpha = T.glow ? 0.6 : 0.35; roundRect(b.x, b.y, b.w, b.h, 14); ctx.fill(); ctx.globalAlpha = 1;
+    ctx.textAlign = 'left'; ctx.fillStyle = T.hud; ctx.font = 'bold 18px ' + T.font;
+    ctx.fillText(o.label, b.x + 20, y + 41);
+    const on = SET[o.id], sx = b.x + b.w - 78, sy = y + 18;      // switch
+    ctx.fillStyle = on ? T.accent : T.sub; ctx.globalAlpha = on ? 1 : 0.5;
+    roundRect(sx, sy, 58, 32, 16); ctx.fill(); ctx.globalAlpha = 1;
+    ctx.fillStyle = on ? T.buttonText : T.bg;
+    ctx.beginPath(); ctx.arc(on ? sx + 42 : sx + 16, sy + 16, 12, 0, Math.PI * 2); ctx.fill();
+    ctx.textAlign = 'right'; ctx.fillStyle = on ? T.accent : T.sub; ctx.font = 'bold 12px ' + T.font;
+    ctx.fillText(on ? 'ON' : 'OFF', sx - 10, y + 40);
+  });
+  ctx.textAlign = 'center'; ctx.fillStyle = T.sub; ctx.font = '15px ' + T.font;
+  ctx.fillText('Tap anywhere else to close', W / 2, 590);
+}
+
+function drawThemeButton() {
+  const x = W - 46, y = 44, s = 30;
+  S.rects.theme = { x: x - 6, y: y - 6, w: s + 12, h: s + 12 };
+  ctx.save();
+  roundRect(x, y, s, s, T.tile ? 10 : 6); ctx.clip();
+  for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
+    ctx.fillStyle = (i + j) % 2 ? T.light : T.dark;
+    ctx.fillRect(x + i * s / 2, y + j * s / 2, s / 2, s / 2);
+  }
+  ctx.restore();
+  ctx.strokeStyle = T.hud; ctx.lineWidth = 1.5; roundRect(x, y, s, s, T.tile ? 10 : 6); ctx.stroke();
+}
+
+function drawHud() {
+  const p = S.player;
+  ctx.fillStyle = T.bg; ctx.fillRect(0, 0, W, BOARD_Y);
+  ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+  ctx.fillStyle = T.accent; ctx.font = 'bold 14px ' + T.font;
+  ctx.fillText('CHESS MARATHON', 18, 64);
+  drawThemeButton();
+  drawGear();
+  ctx.fillStyle = T.hud; ctx.font = 'bold 30px ' + T.font;
+  ctx.fillText(S.score, 18, 106);
+  if (S.combo >= 2) {
+    const sw = ctx.measureText(String(S.score)).width;
+    ctx.fillStyle = T.accent; ctx.font = 'bold 20px ' + T.font;
+    ctx.fillText('x' + S.combo, 18 + sw + 10, 106);
+  }
+  ctx.textAlign = 'right'; ctx.font = 'bold 17px ' + T.font;
+  ctx.fillText('RANK ' + (p.r + 1), W - 18, 98);
+  ctx.fillStyle = T.sub; ctx.font = '12px ' + T.font;
+  ctx.fillText('of ' + RANKS + ' · best ' + BEST, W - 18, 116);
+  ctx.textAlign = 'left'; ctx.font = 'bold 18px sans-serif';
+  for (let i = 0; i < 3; i++) { ctx.fillStyle = i < S.lives ? T.danger : T.sub; ctx.globalAlpha = i < S.lives ? 1 : 0.35; ctx.fillText('\u2665', 168 + i * 20, 64); }
+  ctx.globalAlpha = 1;
+}
+
+function drawFooter() {
+  const p = S.player;
+  ctx.fillStyle = T.bg; ctx.fillRect(0, FOOT_Y, W, H - FOOT_Y);
+  ctx.textBaseline = 'alphabetic';
+  if (S.state === 'play' && S.blocked) {
+    const b = { x: 24, y: FOOT_Y + 22, w: W - 48, h: 54 };
+    S.rects.wait = b;
+    ctx.fillStyle = T.button; roundRect(b.x, b.y, b.w, b.h, T.tile ? 18 : 10); ctx.fill();
+    ctx.fillStyle = T.buttonText; ctx.textAlign = 'center'; ctx.font = 'bold 18px ' + T.font;
+    ctx.fillText('NO MOVES · WAIT A TURN', W / 2, b.y + 34);
+    return;
+  }
+  S.rects.wait = null;
+  const gap = Math.max(0, p.r - S.collapse);
+  const near = gap < 2.5;
+  ctx.fillStyle = near ? T.danger : T.sub; ctx.font = 'bold 12px ' + T.font; ctx.textAlign = 'left';
+  ctx.fillText(near ? 'THE VOID IS RIGHT BEHIND YOU' : 'VOID ' + gap.toFixed(1) + ' RANKS BEHIND', 18, FOOT_Y + 118);
+  ctx.globalAlpha = 0.3; ctx.fillStyle = T.sub; ctx.fillRect(18, FOOT_Y + 126, W - 36, 6); ctx.globalAlpha = 1;
+  ctx.fillStyle = near ? T.danger : T.accent;
+  ctx.fillRect(18, FOOT_Y + 126, (W - 36) * Math.min(1, gap / 8), 6);
+  drawPiece(p.type, 46, FOOT_Y + 52, 46, true);
+  ctx.textAlign = 'left'; ctx.fillStyle = T.hud; ctx.font = 'bold 18px ' + T.font;
+  ctx.fillText('You are a ' + p.type, 84, FOOT_Y + 46);
+  ctx.fillStyle = T.sub; ctx.font = '13px ' + T.font;
+  ctx.fillText(p.type === 'pawn' ? 'Capture a piece to become it.' : 'Get taken and you fall back to a pawn.', 84, FOOT_Y + 68);
+  ctx.fillText(p.type === 'pawn' ? 'Step forward or sideways. Gold rank = queen.' : 'Capture another piece to switch.', 84, FOOT_Y + 88);
+}
+
+function drawMenu() {
+  ctx.fillStyle = T.bg; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  drawPiece('pawn', W / 2, 150, 76, true);
+  ctx.fillStyle = T.hud; ctx.font = 'bold 42px ' + T.font;
+  ctx.fillText('CHESS', W / 2, 238);
+  ctx.fillStyle = T.accent; ctx.fillText('MARATHON', W / 2, 284);
+  ctx.fillStyle = T.sub; ctx.font = '15px ' + T.font;
+  ctx.fillText('Start as a pawn. Run 1000 ranks.', W / 2, 316);
+  ctx.fillStyle = T.hud; ctx.font = 'bold 13px ' + T.font;
+  ctx.fillText('CHOOSE A THEME', W / 2, 368);
+
+  const prev = T;
+  S.rects.swatches = [];
+  const sw = 150, sh = 104, gx = (W - sw * 2 - 16) / 2;
+  THEME_IDS.forEach((id, i) => {
+    const th = THEMES[id];
+    const x = gx + (i % 2) * (sw + 16), y = 384 + Math.floor(i / 2) * (sh + 16);
+    S.rects.swatches.push({ x, y, w: sw, h: sh, id });
+    T = th;
+    ctx.save(); roundRect(x, y, sw, sh, 12); ctx.clip();
+    ctx.fillStyle = th.bg; ctx.fillRect(x, y, sw, sh);
+    const cs = 22, bx = x + (sw - cs * 5) / 2, by = y + 10;
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 5; c++) {
+      ctx.fillStyle = (r + c) % 2 ? th.light : th.dark;
+      if (th.tile) { roundRect(bx + c * cs + 1, by + r * cs + 1, cs - 2, cs - 2, 5); ctx.fill(); }
+      else ctx.fillRect(bx + c * cs, by + r * cs, cs, cs);
+    }
+    drawPiece('knight', bx + cs * 1.5, by + cs * 0.5, 18, false);
+    drawPiece('pawn', bx + cs * 3.5, by + cs * 2.5, 18, true);
+    ctx.fillStyle = th.hud; ctx.font = 'bold 13px ' + th.font; ctx.textAlign = 'center';
+    ctx.fillText(th.name, x + sw / 2, y + sh - 12);
+    ctx.restore();
+    ctx.lineWidth = id === themeId ? 3 : 1;
+    ctx.strokeStyle = id === themeId ? prev.accent : prev.sub;
+    roundRect(x, y, sw, sh, 12); ctx.stroke();
+  });
+  T = prev;
+
+  const b = { x: 40, y: 640, w: W - 80, h: 62 };
+  S.rects.play = b;
+  ctx.fillStyle = T.button; roundRect(b.x, b.y, b.w, b.h, T.tile ? 22 : 12); ctx.fill();
+  ctx.fillStyle = T.buttonText; ctx.font = 'bold 22px ' + T.font; ctx.textAlign = 'center';
+  ctx.fillText('PLAY', W / 2, b.y + 40);
+  ctx.fillStyle = T.sub; ctx.font = '14px ' + T.font;
+  ctx.fillText('Best rank ' + BEST, W / 2, 740);
+}
+
+function drawEnd() {
+  ctx.fillStyle = T.bg; ctx.globalAlpha = 0.9; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = S.state === 'won' ? T.accent : T.hud;
+  ctx.font = 'bold 40px ' + T.font;
+  ctx.fillText(S.state === 'won' ? 'FINISH!' : 'GAME OVER', W / 2, H / 2 - 60);
+  ctx.fillStyle = T.sub; ctx.font = '17px ' + T.font;
+  ctx.fillText(S.state === 'won' ? 'You ran all 1000 ranks' : S.msg, W / 2, H / 2 - 22);
+  ctx.fillStyle = T.hud; ctx.font = 'bold 24px ' + T.font;
+  ctx.fillText('Rank ' + (S.best + 1) + '  ·  ' + S.score + ' pts', W / 2, H / 2 + 24);
+  if (S.newBest) { ctx.fillStyle = T.accent; ctx.font = 'bold 18px ' + T.font; ctx.fillText('NEW BEST!', W / 2, H / 2 + 62); }
+  ctx.fillStyle = T.sub; ctx.font = '15px ' + T.font;
+  ctx.fillText('Tap to continue', W / 2, H / 2 + 120);
+}
+
+function draw() {
+  S.rects = { theme: null, gear: null, play: null, wait: null, swatches: [], toggles: [] };
+  if (S.state === 'menu') { drawMenu(); drawThemeButton(); drawGear(); if (S.settings) drawSettings(); return; }
+  ctx.fillStyle = T.bg; ctx.fillRect(0, 0, W, H);
+  drawBoard();
+  drawHud();
+  drawFooter();
+  if (S.state === 'over' || S.state === 'won') drawEnd();
+  if (S.settings) drawSettings();
+}
+
+// ---- Loop ----
+function update(dt) {
+  if (S.slow > 0) { S.slow -= dt; dt *= 0.3; }               // slow-motion after a capture
+  S.flashA = Math.max(0, S.flashA - dt * 3);
+  for (const g of S.rings) g.t += dt;
+  S.rings = S.rings.filter(g => g.t < 0.5);
+  for (const d of S.debris) { d.vy += 900 * dt; d.y += d.vy * dt; d.rot += d.vr * dt; d.life -= dt * 1.2; }
+  S.debris = S.debris.filter(d => d.life > 0);
+  if (S.banner) { S.banner.life -= dt; if (S.banner.life <= 0) S.banner = null; }
+  S.time += dt;
+  if (S.blackAt && S.time >= S.blackAt && S.state === 'play' && !S.settings) { S.blackAt = 0; blackTurn(); }
+  S.cam += (camTarget() - S.cam) * Math.min(1, dt * 12);
+  const p = S.player;
+  p.dr += (p.r - p.dr) * Math.min(1, dt * 20);
+  p.dc += (p.c - p.dc) * Math.min(1, dt * 20);
+  for (const e of S.enemies.values()) {
+    e.dr += (e.r - e.dr) * Math.min(1, dt * 18);
+    e.dc += (e.c - e.dc) * Math.min(1, dt * 18);
+  }
+  S.shake = Math.max(0, S.shake - dt * 3);
+  for (const q of S.parts) { q.x += q.vx * dt; q.y += q.vy * dt; q.vy += 500 * dt; q.life -= dt; }
+  S.parts = S.parts.filter(q => q.life > 0);
+  for (const f of S.floats) { f.y -= 45 * dt; f.life -= dt; }
+  S.floats = S.floats.filter(f => f.life > 0);
+}
+
+newGame();
+S.state = 'menu';
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
