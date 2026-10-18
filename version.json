@@ -1,1 +1,4 @@
-{ "version": "3.1.0", "notes": "New Stats screen: your best runs, your last run, and lifetime totals." }
+{
+ "version": "3.2.0",
+ "notes": "Plays on desktop and landscape screens, new fonts built in, and a few fairness tweaks."
+}
